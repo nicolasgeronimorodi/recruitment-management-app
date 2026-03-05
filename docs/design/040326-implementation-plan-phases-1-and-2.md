@@ -1,7 +1,7 @@
 # Implementation Plan — Phases 1 & 2
 
 **Date:** 04/03/2026
-**Status:** In Progress
+**Status:** Phase 1 complete — Phase 2 blocked (port conflict, see Phase 2 Milestone)
 **Related:** [Tech Stack & Structure](./040326-tech-stack-and-structure.md)
 
 ---
@@ -94,6 +94,9 @@ FROM node:20-alpine
 
 WORKDIR /app
 
+# Prisma necesita OpenSSL para su query engine — Alpine no lo incluye por defecto
+RUN apk add --no-cache openssl
+
 COPY package*.json ./
 
 RUN npm install
@@ -143,6 +146,8 @@ CMD ["npm", "run", "dev"]
 #### `docker-compose.yml` (root)
 
 ```yaml
+# Nota: 'version' está deprecado en Docker Compose V2+ y puede generar un warning.
+# Se puede remover sin efectos. Se mantiene por compatibilidad con documentación existente.
 version: '3.8'
 
 services:
@@ -249,12 +254,26 @@ Run `docker compose up --build` and verify:
 
 ### Step 1: Install Prisma
 
+> **Versión de Prisma:** Usamos **Prisma 5** (no la última versión). Prisma 7 introdujo breaking changes en cómo se declara la conexión a la DB (`datasource url` se movió a un archivo `prisma.config.ts` separado), y el ecosistema NestJS todavía no tiene soporte estable para ella. Prisma 5 es la versión con mayor documentación, tutoriales, y compatibilidad con NestJS.
+>
+> **Si previamente instalaste Prisma 7** (sin especificar versión), necesitás hacer el downgrade y limpiar los residuos antes de continuar:
+> ```bash
+> cd backend
+> npm uninstall prisma @prisma/client
+> npm install prisma@^5 --save-dev
+> npm install @prisma/client@^5
+> # Borrar prisma.config.ts — es un archivo de Prisma 7, no existe en Prisma 5
+> rm prisma.config.ts
+> # Borrar la carpeta prisma/ generada por Prisma 7 (se va a recrear con prisma init)
+> rm -rf prisma/
+> ```
+
 Run inside `backend/`:
 
 ```bash
 cd backend
-npm install prisma --save-dev
-npm install @prisma/client
+npm install prisma@^5 --save-dev
+npm install @prisma/client@^5
 npx prisma init
 ```
 
@@ -270,7 +289,8 @@ Replace the entire content of the generated `schema.prisma` with the schema belo
 
 ```prisma
 generator client {
-  provider = "prisma-client-js"
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "linux-musl-openssl-3.0.x"]
 }
 
 datasource db {
@@ -386,6 +406,17 @@ enum ApplicationStatus {
 
 > **Key:** `@@unique([jobDescriptionId, applicantId])` enforces the business rule "one application per applicant per job description" at the database level.
 
+> **binaryTargets en el generator:** Prisma compila un "query engine" binario específico para cada plataforma. `"native"` genera para tu máquina local (Windows) y `"linux-musl-openssl-3.0.x"` genera para Alpine Linux (el contenedor Docker). Sin ambos targets, Prisma funciona en uno de los dos entornos pero falla en el otro.
+
+Después de escribir el schema, generá el Prisma Client localmente para que el IDE reconozca los tipos (enums como `Role`, modelos como `User`, etc.):
+
+```bash
+# Desde backend/
+npx prisma generate
+```
+
+> Esto genera el Prisma Client en `node_modules/@prisma/client` con tipos TypeScript para todos los modelos y enums del schema. Sin este paso, el IDE marca errores como `Module '@prisma/client' has no exported member 'Role'`.
+
 ---
 
 ### Step 3: Seed Script
@@ -406,6 +437,8 @@ Add this block at the root level of `package.json`:
   "seed": "ts-node prisma/seed.ts"
 }
 ```
+
+> **Cuidado con el typo:** El valor debe ser `"ts-node prisma/seed.ts"` con guión. Si se escribe `"ts node"` (con espacio), `prisma db seed` falla silenciosamente porque no encuentra el ejecutable `ts`.
 
 #### `backend/prisma/seed.ts`
 
@@ -512,12 +545,63 @@ docker compose exec backend npx prisma db seed
 
 ---
 
-### Phase 2 Milestone
+---
 
-Verify with Prisma Studio:
+### Troubleshooting: `docker compose down` vs `docker compose down -v`
+
+> **`docker compose down`** detiene y elimina los contenedores y las redes, pero **preserva los volúmenes** (`postgres_data`, `minio_data`). La próxima vez que levantes los contenedores, la DB mantiene todos los datos previos.
+>
+> **`docker compose down -v`** hace lo mismo **más destruir los volúmenes**. La próxima vez que levantes, PostgreSQL arranca con una DB vacía y vuelve a ejecutar la inicialización (crear usuario, base de datos, etc.).
+>
+> **Cuándo usar `-v`:** Cuando los datos del volumen están corruptos o tienen credenciales de un run anterior que ya no coinciden con las variables de entorno actuales. Es el equivalente a "borrón y cuenta nueva" para la DB.
+>
+> **Riesgo:** Toda la data existente se pierde. Si ya corriste migrations y seed, tendrás que volver a ejecutarlos.
+
+---
+
+### Troubleshooting: conflicto de puerto 5432
+
+> Si al intentar conectarte a PostgreSQL desde una herramienta externa (TablePlus, pgAdmin, DBeaver, etc.) la conexión falla o se comporta de manera inconsistente, verificá si hay otro proceso escuchando en el mismo puerto:
+>
+> ```bash
+> # Windows
+> netstat -ano | findstr :5432
+> ```
+>
+> Si el resultado muestra **dos PIDs distintos** en LISTENING, hay un conflicto. Esto suele ocurrir cuando hay una instalación local de PostgreSQL (no Docker) corriendo como servicio de Windows.
+>
+> **Solución opción A — detener el servicio local:**
+> ```bash
+> # Abrir PowerShell como administrador
+> Stop-Service -Name "postgresql-x64-XX"
+> # O desde services.msc, buscar "PostgreSQL" y detenerlo
+> ```
+>
+> **Solución opción B — cambiar el puerto del contenedor Docker:**
+> En `docker-compose.yml`, cambiar el port mapping de postgres:
+> ```yaml
+> ports:
+>   - '5433:5432'  # host:container — el contenedor sigue usando 5432, el host expone en 5433
+> ```
+> Con esta opción, la conexión desde el host (TablePlus, etc.) usa el puerto 5433 en lugar de 5432. El `DATABASE_URL` del backend **no se cambia** porque el backend se conecta por la red interna de Docker (donde postgres sigue en 5432).
+>
+> **Importante:** Si elegís opción B, actualizá también cualquier referencia al puerto en las herramientas externas (TablePlus, etc.).
+
+---
+
+### Phase 2 milestone
+
+> **Status: blocked** — pendiente de resolver el conflicto de puerto 5432 para poder verificar los datos con un cliente externo.
+
+Verificar con Prisma Studio o un cliente externo (TablePlus, pgAdmin, DBeaver):
 
 ```bash
+# Opción A: Prisma Studio (se abre en el browser)
 docker compose exec backend npx prisma studio
+
+# Opción B: Cliente externo
+# Host: localhost, Port: 5432 (o 5433 si cambiaste el mapping),
+# User: recruiting_user, Password: recruiting_pass, Database: recruiting_db
 ```
 
 - [ ] `users` table has 1 record (admin@recruiting.com)
