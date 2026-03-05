@@ -1,0 +1,113 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// -- IAM Context --
+
+model User {
+  id        String @id @default(uuid())
+  email     String     @unique
+  password  String
+  name      String
+  role      Role       @default(RECRUITING_OFFICER)
+  isActive  Boolean    @default(true)
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+
+  @@map("users")
+}
+
+enum Role {
+  RECRUITING_OFFICER
+}
+
+// -- Recruitment Context --
+
+model Country {
+  id        String @id @default(uuid())
+  name      String @unique
+  companies Company[]
+
+  @@map("countries")
+}
+
+model Field {
+  id    String @id @default(uuid())
+  name  String @unique
+  companies Company[]
+
+  @@map("fields")
+}
+
+model Company {
+  id              String           @id @default(uuid())
+  name            String
+  countryId       String
+  country         Country          @relation(fields: [countryId], references: [id])
+  fields          Field[]
+  jobDescriptions JobDescription[]
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+
+  @@map("companies")
+}
+
+model JobDescription {
+  id           String               @id @default(uuid())
+  title        String
+  description  String
+  requirements String?
+  status       JobDescriptionStatus @default(DRAFT)
+  companyId    String
+  company      Company              @relation(fields: [companyId], references: [id])
+  applications JobApplication[]
+  createdAt    DateTime             @default(now())
+  updatedAt    DateTime             @updatedAt
+
+  @@map("job_descriptions")
+}
+
+enum JobDescriptionStatus {
+  DRAFT
+  PUBLISHED
+  CANCELED
+}
+
+model Applicant {
+  id           String           @id @default(uuid())
+  email        String           @unique
+  name         String
+  phone        String?
+  cvPath       String?
+  applications JobApplication[]
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
+
+  @@map("applicants")
+}
+
+model JobApplication {
+  id               String            @id @default(uuid())
+  status           ApplicationStatus @default(RECEIVED)
+  jobDescriptionId String
+  jobDescription   JobDescription    @relation(fields: [jobDescriptionId], references: [id])
+  applicantId      String
+  applicant        Applicant         @relation(fields: [applicantId], references: [id])
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+
+  @@unique([jobDescriptionId, applicantId])
+  @@map("job_applications")
+}
+
+enum ApplicationStatus {
+  RECEIVED
+  UNDER_REVIEW
+  ACCEPTED
+  REJECTED
+}
