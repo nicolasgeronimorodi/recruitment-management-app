@@ -1,0 +1,3 @@
+export enum Role {
+    RECRUITING_OFFICER = 'RECRUITING_OFFICER'
+}
