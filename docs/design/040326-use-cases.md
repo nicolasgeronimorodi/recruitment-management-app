@@ -19,7 +19,7 @@
 
 ## 2. Use Cases
 
-### 2.1 IAM Context
+### 2.1 IAM (Identity & Access Management) Context 
 
 #### UC-01: Login
 
