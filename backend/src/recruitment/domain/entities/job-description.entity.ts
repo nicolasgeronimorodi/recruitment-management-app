@@ -58,7 +58,7 @@ export class JobDescription {
         this._status === JobDescriptionStatus.DRAFT &&
         this._title.trim().length > 0 &&
         this._description.trim().length > 0 &&
-        this.companyId.trim.length > 0
+        this.companyId.trim().length > 0
       )
     };
 
@@ -96,6 +96,7 @@ export class JobDescription {
         if(!this.canBeCanceled()){
             throw new Error('Only PUBLISHED job descriptions can be canceled');
         }
+        this._status = JobDescriptionStatus.CANCELED;
     }
 
 
